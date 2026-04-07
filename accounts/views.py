@@ -36,7 +36,7 @@ class UserViewSet(viewsets.ModelViewSet):
         return User.objects.filter(id=user.id, is_deleted=False)
 
     @action(detail=False, methods=['get'])
-    def user_details(self, request):
+    def details(self, request):
         serializer = UserSerializer(request.user)
         return Response(serializer.data)
 
