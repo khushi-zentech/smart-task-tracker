@@ -6,12 +6,16 @@ from rest_framework import viewsets, permissions, status
 from datetime import timedelta
 from django.db.models import Sum
 from django.utils.timezone import now
+from django.core.mail import EmailMessage
 
 from .models import TimeLog
 from .serializers import TimeLogSerializer
 
 from tasks.models import Task
 from projects.models import ProjectMember
+
+import csv
+from io import StringIO
 
 class AnalyticsViewSet(viewsets.ModelViewSet):
     queryset = TimeLog.objects.filter(is_deleted=False)
@@ -144,3 +148,31 @@ class AnalyticsViewSet(viewsets.ModelViewSet):
         ]
         
         return Response(data)
+    
+    @action(detail=False, methods=['post'])
+    def export_csv(self, request):
+        user = request.user
+
+        total_tasks = Task.objects.filter(assigned_to=user, is_deleted=False).count()
+        completed_tasks = Task.objects.filter(assigned_to=user, status='done', is_deleted=False).count()
+        total_time = TimeLog.objects.filter(user=user, is_deleted=False).aggregate(total=Sum('hours_spent'))['total'] or 0
+
+        if total_tasks > 0:
+            productivity_score = ((completed_tasks / total_tasks) * 100) + total_time 
+        else:
+            productivity_score = total_time 
+
+        buffer = StringIO()
+        writer = csv.writer(buffer)
+
+        writer.writerow(['Username', 'Total Tasks', 'Completed Tasks', 'Total Time', 'Productivity Score'])
+        writer.writerow([user.username, total_tasks, completed_tasks, total_time, productivity_score])
+
+        csv_file = buffer.getvalue()
+        buffer.close()
+        
+        email = EmailMessage(subject="Your Productivity Report", body="Attached is your analytics report.", to=[user.email])
+        email.attach('analytics_report.csv', csv_file, 'text/csv')
+        email.send()
+
+        return Response({"message": "CSV report sent to your email"})
