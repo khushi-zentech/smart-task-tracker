@@ -1,5 +1,7 @@
 from rest_framework.response import Response
+from rest_framework.filters import SearchFilter
 from rest_framework import viewsets, permissions, status
+from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework.exceptions import ValidationError, NotFound
 
 from .models import Task
@@ -10,6 +12,10 @@ from projects.models import ProjectMember
 class TaskViewSet(viewsets.ModelViewSet):
     serializer_class = TaskSerializer
     permission_classes = [permissions.IsAuthenticated]
+    
+    search_fields = ['title']
+    filter_backends = [DjangoFilterBackend, SearchFilter]
+    filterset_fields = ['priority', 'status', 'assigned_to']
 
     def get_queryset(self):
         user = self.request.user
@@ -82,4 +88,5 @@ class TaskViewSet(viewsets.ModelViewSet):
 
         task.is_deleted = True
         task.save()
+        
         return Response({"message": "Task deleted"}, status=status.HTTP_204_NO_CONTENT)
