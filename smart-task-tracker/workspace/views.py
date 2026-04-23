@@ -1,91 +1,78 @@
-from rest_framework import viewsets, permissions, status
-from rest_framework.response import Response
 from rest_framework.decorators import action
+from rest_framework.response import Response
+from rest_framework import viewsets, permissions, status
 
-from .models import Workspace, WorkspaceMember
-from .serializers import WorkspaceSerializer, WorkspaceMemberSerializer
+from workspace import constants
+from .services import WorkspaceService
+from .serializers import WorkspaceSerializer
 
 class WorkspaceViewSet(viewsets.ModelViewSet):
     serializer_class = WorkspaceSerializer
     permission_classes = [permissions.IsAuthenticated]
 
     def get_queryset(self):
-        user = self.request.user
+        queryset = WorkspaceService.get_queryset(self.request.user)
+        return queryset
 
-        return Workspace.objects.filter(
-            is_deleted=False,
-            members__user=user,
-            members__is_deleted=False
-        ).distinct()
+    def create(self, request, *args, **kwargs):
+        data, errors = WorkspaceService.create_workspace(request.data, request.user)
 
-    def perform_create(self, serializer):
-        workspace = serializer.save(owner=self.request.user)
+        if errors:
+            return Response(errors, status=status.HTTP_400_BAD_REQUEST)
 
-        WorkspaceMember.objects.create(
-            user=self.request.user,
-            workspace=workspace,
-            role='owner'
+        return Response(
+            {
+                "message": constants.WORKSPACE_CREATED_SUCCESS,
+                "data": data
+            }, status=status.HTTP_201_CREATED
         )
 
     def update(self, request, *args, **kwargs):
-        workspace = self.get_object()
+        instance = self.get_object()
+        data, error = WorkspaceService.update_workspace(instance, request.user, request.data)
 
-        if workspace.owner != request.user:
-            return Response({"error": "Only owner can update!"}, status=status.HTTP_403_FORBIDDEN)
+        if error == constants.ONLY_OWNER_UPDATE:
+            return Response({"message": constants.ONLY_OWNER_UPDATE}, status=status.HTTP_403_FORBIDDEN)
 
-        return super().update(request, *args, **kwargs)
+        if isinstance(error, dict):
+            return Response(error, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": constants.WORKSPACE_UPDATED_MESSAGE, "data": data})
 
     def destroy(self, request, *args, **kwargs):
-        workspace = self.get_object()
+        instance = self.get_object()
+        success, error = WorkspaceService.delete_workspace(instance, request.user)
 
-        if workspace.owner != request.user:
-            return Response({"error": "Only owner can delete!"}, status=status.HTTP_403_FORBIDDEN)
-
-        workspace.is_deleted = True
-        workspace.save()
-        
-        WorkspaceMember.objects.filter(workspace=workspace).update(is_deleted=True)
-
-        return Response({"message": "Workspace deleted Successfully"}, status=status.HTTP_204_NO_CONTENT)
+        if error == constants.ONLY_OWNER_DELETE:
+            return Response({"message": constants.ONLY_OWNER_DELETE}, status=status.HTTP_403_FORBIDDEN)
+        return Response({"message": constants.WORKSPACE_DELETED_MESSAGE}, status=status.HTTP_204_NO_CONTENT)
 
     @action(detail=True, methods=['post'])
     def add_member(self, request, pk=None):
-        workspace = self.get_object()
+        instance = self.get_object()
+        data, error = WorkspaceService.add_member(instance, request.user, request.data)
 
-        if workspace.owner != request.user:
-            return Response({"error": "Only owner can add members!"}, status=status.HTTP_403_FORBIDDEN)
+        if error == constants.ONLY_OWNER_ADD:
+            return Response({"message": constants.ONLY_OWNER_ADD}, status=status.HTTP_403_FORBIDDEN)
 
-        serializer = WorkspaceMemberSerializer(data=request.data)
-
-        if serializer.is_valid():
-            serializer.save(workspace=workspace)
-            return Response(serializer.data)
-
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        if isinstance(error, dict):
+            return Response(error, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": constants.MEMBER_ADDED_SUCCESS, "data": data}, status=status.HTTP_201_CREATED)
 
     @action(detail=True, methods=['post'])
     def remove_member(self, request, pk=None):
-        workspace = self.get_object()
-
-        if workspace.owner != request.user:
-            return Response({"error": "Only owner can remove members!"}, status=status.HTTP_403_FORBIDDEN)
-
+        instance = self.get_object()
         username = request.data.get('user')
+        success, error = WorkspaceService.remove_member(instance, request.user, username)
 
-        try:
-            member = WorkspaceMember.objects.get(workspace=workspace, user__username=username, is_deleted=False)
-            
-            member.is_deleted = True
-            member.save()
+        if error == constants.ONLY_OWNER_REMOVE:
+            return Response({"message": constants.ONLY_OWNER_REMOVE}, status=status.HTTP_403_FORBIDDEN)
 
-            return Response({"message": "Member removed Successfully."})
-        except WorkspaceMember.DoesNotExist:
-            return Response({"error": "User not found!"}, status=status.HTTP_400_BAD_REQUEST)
+        if error == constants.MEMBER_NOT_FOUND:
+            return Response({"message": constants.MEMBER_NOT_FOUND}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": constants.MEMBER_REMOVED_SUCCESS}, status=status.HTTP_204_NO_CONTENT)
 
     @action(detail=True, methods=['get'])
     def members(self, request, pk=None):
-        workspace = self.get_object()
-        members = WorkspaceMember.objects.filter(workspace=workspace, is_deleted=False)
-
-        serializer = WorkspaceMemberSerializer(members, many=True)
-        return Response(serializer.data)
+        instance = self.get_object()
+        data = WorkspaceService.get_members(instance)
+        return Response({"message": constants.GET_MEMBER_SUCCESS, "data": data})
