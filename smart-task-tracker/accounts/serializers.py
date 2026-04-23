@@ -1,5 +1,6 @@
-from rest_framework import serializers
 from .models import User
+from rest_framework import serializers
+from .constants import USER_EXISTS_MESSAGE, EMAIL_EXISTS_MESSAGE
 from django.contrib.auth.password_validation import validate_password
 
 class RegisterSerializer(serializers.ModelSerializer):
@@ -14,11 +15,10 @@ class RegisterSerializer(serializers.ModelSerializer):
         username = data.get('username')
 
         if User.objects.filter(email=email, is_deleted=False).exists():
-            raise serializers.ValidationError({"email": "Email already exists!"})
+            raise serializers.ValidationError({"email": EMAIL_EXISTS_MESSAGE})
 
         if User.objects.filter(username=username, is_deleted=False).exists():
-            raise serializers.ValidationError({"username": "Username already exists!"})
-
+            raise serializers.ValidationError({"username": USER_EXISTS_MESSAGE})
         return data
 
     def create(self, validated_data):
