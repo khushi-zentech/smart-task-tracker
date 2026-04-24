@@ -1,155 +1,145 @@
-from .models import Project, ProjectMember
-from workspace.models import WorkspaceMember
-from .serializers import ProjectSerializer, ProjectMemberSerializer
-
+from rest_framework import viewsets, status
 from rest_framework.response import Response
-from rest_framework import viewsets, permissions, status
-from rest_framework.exceptions import NotFound, ValidationError
+from rest_framework.permissions import IsAuthenticated
+
+from .constants import *
+from .serializers import ProjectSerializer, ProjectMemberSerializer
+from .services.project_services import ProjectService, ProjectMemberService
 
 class ProjectViewSet(viewsets.ModelViewSet):
     serializer_class = ProjectSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [IsAuthenticated]
 
     def get_queryset(self):
-        user = self.request.user
-
-        return Project.objects.filter(
-            is_deleted=False,
-            workspace__is_deleted=False,
-            workspace__members__user=user,
-            workspace__members__is_deleted=False
-        ).distinct()
+        queryset = ProjectService.get_projects_queryset(self.request.user)
+        return queryset
 
     def get_object(self):
-        try:
-            return self.get_queryset().get(pk=self.kwargs['pk'])
-        except Project.DoesNotExist:
-            raise NotFound("Project not found or access denied")
+        obj, error = ProjectService.get_project_object(self.get_queryset(), self.kwargs['pk'])
 
-    def perform_create(self, serializer):
-        workspace = serializer.validated_data['workspace']
-        user = self.request.user
-
-        if workspace.is_deleted:
-            raise ValidationError("Workspace is deleted")
-
-        is_member = WorkspaceMember.objects.filter(
-            workspace=workspace,
-            user=user,
-            is_deleted=False
-        ).exists()
-
-        if not is_member:
-            raise ValidationError("You are not a member of this workspace")
-
-        serializer.save(created_by=user)
-
-    def update(self, request, *args, **kwargs):
-        project = self.get_object()
-
-        if project.workspace.owner != request.user:
-            return Response({"error": "Only owner can update"}, status=status.HTTP_403_FORBIDDEN)
-
-        return super().update(request, *args, **kwargs)
-
-    def destroy(self, request, *args, **kwargs):
-        project = self.get_object()
-
-        if project.workspace.owner != request.user:
-            return Response({"error": "Only owner can delete"}, status=status.HTTP_403_FORBIDDEN)
-
-        project.is_deleted = True
-        project.save()
-
-        return Response({"message": "Project deleted"}, status=status.HTTP_204_NO_CONTENT)
-
-class ProjectMemberViewSet(viewsets.ModelViewSet):
-    serializer_class = ProjectMemberSerializer
-    permission_classes = [permissions.IsAuthenticated]
-
-    def get_queryset(self):
-        user = self.request.user
-
-        return ProjectMember.objects.filter(
-            is_deleted=False,
-            project__is_deleted=False,
-            project__workspace__is_deleted=False,
-            project__workspace__members__user=user,
-            project__workspace__members__is_deleted=False
-        ).distinct()
-
-    def get_object(self):
-        try:
-            return self.get_queryset().get(pk=self.kwargs['pk'])
-        except ProjectMember.DoesNotExist:
-            raise NotFound("Project member not found or access denied")
+        if error:
+            return Response({"message": PROJECT_NOT_FOUND}, status=status.HTTP_404_NOT_FOUND)
+        return obj
 
     def create(self, request, *args, **kwargs):
-        user = request.user
-        project_id = request.data.get('project')
+        data, error = ProjectService.create_project(request.data, request.user)
 
-        if not project_id:
-            raise ValidationError({"project": "Project ID is required"})
+        if isinstance(error, dict):
+            return Response(error, status=status.HTTP_400_BAD_REQUEST)
 
-        try:
-            project = Project.objects.get(id=project_id, is_deleted=False)
-        except Project.DoesNotExist:
-            raise ValidationError({"project": "Project not found or deleted"})
+        if error == WORKSPACE_NOT_EXIST:
+            return Response({"message": WORKSPACE_NOT_EXIST}, status=status.HTTP_400_BAD_REQUEST)
 
-        if project.workspace.is_deleted:
-            raise ValidationError("Workspace is deleted")
+        if error == NOT_WORKSPACE_MEMBER:
+            return Response({"message": NOT_WORKSPACE_MEMBER}, status=status.HTTP_403_FORBIDDEN)
 
-        if project.workspace.owner != user:
-            return Response({"error": "Only owner can assign"}, status=status.HTTP_403_FORBIDDEN)
-
-        serializer = self.get_serializer(data=request.data)
-
-        if serializer.is_valid():
-            member_user = serializer.validated_data['user']
-
-            is_workspace_member = WorkspaceMember.objects.filter(workspace=project.workspace, user=member_user, is_deleted=False).exists()
-
-            if not is_workspace_member:
-                return Response({"error": "User not in workspace"}, status=status.HTTP_400_BAD_REQUEST)
-
-            is_project_member = ProjectMember.objects.filter(project=project, user=member_user, is_deleted=False).exists()
-            
-            if is_project_member:
-                return Response({"error": "Already assigned"}, status=status.HTTP_400_BAD_REQUEST)
-
-            serializer.save(project=project)
-            return Response(serializer.data, status=status.HTTP_201_CREATED)
-
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        if error:
+            return Response({"message": SOMETHING_WENT_WRONG}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        return Response({"message": PROJECT_CREATED_SUCCESS, "data": data}, status=status.HTTP_201_CREATED)
 
     def update(self, request, *args, **kwargs):
-        member = self.get_object()
+        instance = self.get_object()
 
-        if member.project.workspace.owner != request.user:
-            return Response({"error": "Only owner can update"}, status=status.HTTP_403_FORBIDDEN)
+        if isinstance(instance, Response):
+            return instance
 
-        serializer = self.get_serializer(member, data=request.data, partial=True)
+        data, error = ProjectService.update_project(instance, request.user, request.data)
 
-        if serializer.is_valid():
-            updated_user = serializer.validated_data.get('user', member.user)
+        if error == ONLY_OWNER_UPDATE_MESSAGE:
+            return Response({"message": ONLY_OWNER_UPDATE_MESSAGE}, status=status.HTTP_403_FORBIDDEN)
 
-            is_workspace_member = WorkspaceMember.objects.filter(workspace=member.project.workspace, user=updated_user, is_deleted=False).exists()
+        if isinstance(error, dict):
+            return Response(error, status=status.HTTP_400_BAD_REQUEST)
 
-            if not is_workspace_member:
-                return Response({"error": "User not in workspace"}, status=status.HTTP_400_BAD_REQUEST)
-
-            serializer.save()
-            return Response(serializer.data)
-
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        if error:
+            return Response({"message": SOMETHING_WENT_WRONG}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        return Response({"message": PROJECT_UPDATED_MESSAGE, "data": data})
 
     def destroy(self, request, *args, **kwargs):
-        member = self.get_object()
+        instance = self.get_object()
 
-        if member.project.workspace.owner != request.user:
-            return Response({"error": "Only owner can remove"}, status=status.HTTP_403_FORBIDDEN)
+        if isinstance(instance, Response):
+            return instance
 
-        member.is_deleted = True
-        member.save()
+        success, error = ProjectService.delete_project(instance, request.user)
 
-        return Response({"message": "Member removed"}, status=status.HTTP_204_NO_CONTENT)
+        if error == ONLY_OWNER_DELETE_MESSAGE:
+            return Response({"message": ONLY_OWNER_DELETE_MESSAGE}, status=status.HTTP_403_FORBIDDEN)
+
+        if error:
+            return Response({"message": SOMETHING_WENT_WRONG}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        return Response({"message": PROJECT_DELETED_MESSAGE}, status=status.HTTP_204_NO_CONTENT)
+
+class ProjectMemberViewSet(viewsets.ModelViewSet):
+    permission_classes = [IsAuthenticated]
+    serializer_class = ProjectMemberSerializer
+
+    def get_queryset(self):
+        queryset = ProjectMemberService.get_members_queryset(self.request.user) 
+        return queryset
+
+    def get_object(self):
+        obj, error = ProjectMemberService.get_member_object(self.get_queryset(), self.kwargs['pk'])
+
+        if error:
+            return Response({"message": MEMBER_NOT_FOUND}, status=status.HTTP_400_BAD_REQUEST)
+        return obj
+
+    def create(self, request, *args, **kwargs):
+        data, error = ProjectMemberService.create_member(request.data, request.user)
+
+        if isinstance(error, dict):
+            return Response(error, status=400)
+
+        if error == WORKSPACE_NOT_EXIST:
+            return Response({"message": WORKSPACE_NOT_EXIST}, status=status.HTTP_400_BAD_REQUEST)
+
+        if error == ONLY_OWNER_ASSIGN:
+            return Response({"message": ONLY_OWNER_ASSIGN}, status=status.HTTP_403_FORBIDDEN)
+
+        if error == USER_NOT_IN_WORKSPACE:
+            return Response({"message": USER_NOT_IN_WORKSPACE}, status=status.HTTP_400_BAD_REQUEST)
+
+        if error == ALREADY_ASSIGNED_MESSAGE:
+            return Response({"message": ALREADY_ASSIGNED_MESSAGE}, status=status.HTTP_400_BAD_REQUEST)
+
+        if error:
+            return Response({"message": SOMETHING_WENT_WRONG}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        return Response({"message": MEMBER_CREATED_SUCCESS, "data": data}, status=status.HTTP_201_CREATED)
+
+    def update(self, request, *args, **kwargs):
+        instance = self.get_object()
+
+        if isinstance(instance, Response):
+            return instance
+
+        data, error = ProjectMemberService.update_member(instance, request.user, request.data)
+
+        if error == ONLY_OWNER_UPDATE_MESSAGE:
+            return Response({"message": ONLY_OWNER_UPDATE_MESSAGE}, status=status.HTTP_403_FORBIDDEN)
+
+        if error == USER_NOT_IN_WORKSPACE:
+            return Response({"message": USER_NOT_IN_WORKSPACE}, status=status.HTTP_400_BAD_REQUEST)
+
+        if isinstance(error, dict):
+            return Response(error, status=status.HTTP_400_BAD_REQUEST)
+
+        if error:
+            return Response({"message": SOMETHING_WENT_WRONG}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        return Response({"message": MEMBER_UPDATED_MESSAGE, "data": data})
+
+    def destroy(self, request, *args, **kwargs):
+        instance = self.get_object()
+
+        if isinstance(instance, Response):
+            return instance
+
+        success, error = ProjectMemberService.delete_member(instance, request.user)
+
+        if error == ONLY_OWNER_REMOVE:
+            return Response({"message": ONLY_OWNER_REMOVE}, status=status.HTTP_403_FORBIDDEN)
+
+        if error:
+            return Response({"message": SOMETHING_WENT_WRONG}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+        return Response({"message": MEMBER_DELETED_MESSAGE}, status=status.HTTP_204_NO_CONTENT)

@@ -15,6 +15,8 @@ from pathlib import Path
 from datetime import timedelta
 from dotenv import load_dotenv
 
+load_dotenv()
+
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
 
@@ -81,8 +83,6 @@ WSGI_APPLICATION = 'smart_task_tracker.wsgi.application'
 
 # Database
 # https://docs.djangoproject.com/en/5.2/ref/settings/#databases
-
-load_dotenv()
 
 DATABASES = {
     'default': {
